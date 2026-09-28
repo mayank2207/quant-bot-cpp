@@ -1,71 +1,150 @@
+import csv
+import json
+import os
 import time
+from datetime import datetime
 import requests
 
-# List to store historical prices for averages
-price_history = []
-
-def get_ticker_price(symbol="BTCUSDT"):
-    """Fetch live ticker price from Binance test feed"""
+# ==========================================
+# 1. CONFIGURATION & KEYS LOADER
+# ==========================================
+def load_config():
+    """Load API credentials and base URL from config.json"""
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            return float(response.json()["price"])
+        with open("config.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("[Warning] config.json not found. Using fallback endpoint.")
+        return {
+            "api_key": "MOCK_KEY",
+            "secret_key": "MOCK_SECRET",
+            "base_url": "https://api.binance.com/api/v3"
+        }
+
+config = load_config()
+BASE_URL = config.get("base_url", "https://api.binance.com/api/v3")
+
+# ==========================================
+# 2. TRADE LOGGING SETUP
+# ==========================================
+LOG_FILE = "trades.csv"
+
+def init_log_file():
+    """Initialize CSV log file with headers if it doesn't exist"""
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["timestamp", "action", "symbol", "price", "status"])
+
+def log_trade(action, symbol, price, status="EXECUTED"):
+    """Append executed order details to CSV file"""
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, mode="a", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow([timestamp, action, symbol, price, status])
+    print(f"[Log Saved] Recorded {action} at ${price:.2f} in {LOG_FILE}")
+
+# ==========================================
+# 3. GLOBAL STATE & STRATEGY PARAMETERS
+# ==========================================
+price_history = []
+SHORT_WINDOW = 5
+LONG_WINDOW = 20
+in_position = False
+
+# ==========================================
+# 4. MARKET DATA API FETCHING
+# ==========================================
+def get_latest_price(symbol="BTCUSDT"):
+    """Fetch current market price from API"""
+    try:
+        if "binance" in BASE_URL:
+            url = f"{BASE_URL}/ticker/price?symbol={symbol}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                return float(response.json()["price"])
+        else:
+            url = f"{BASE_URL}/v3/ticker?symbol=BTC/USDT"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                return float(response.json().get("price", 0))
     except Exception as e:
-        print(f"Fetch error: {e}")
+        print(f"[API Error] Failed to fetch price: {e}")
     return None
 
-def calculate_sma(prices, period):
-    """Calculate Simple Moving Average"""
-    if len(prices) < period:
+# ==========================================
+# 5. TECHNICAL INDICATORS & STRATEGY LOGIC
+# ==========================================
+def calculate_sma(prices, window):
+    if len(prices) < window:
         return None
-    return sum(prices[-period:]) / period
+    return sum(prices[-window:]) / window
 
-def evaluate_trading_strategy(current_price):
-    """Moving Average Crossover Strategy"""
+def execute_order(action, symbol, price):
+    global in_position
+    print("\n" + "=" * 50)
+    print(f" [ORDER EXECUTED] Action: {action} | Symbol: {symbol} | Price: ${price:.2f}")
+    print("=" * 50 + "\n")
+    
+    if action == "BUY":
+        in_position = True
+    elif action == "SELL":
+        in_position = False
+
+    # Record trade into trades.csv
+    log_trade(action, symbol, price)
+
+def evaluate_strategy(current_price, symbol="BTCUSDT"):
+    global in_position
     price_history.append(current_price)
     
-    # Keep only the last 30 prices in memory
-    if len(price_history) > 30:
+    if len(price_history) > 100:
         price_history.pop(0)
 
-    # Need at least 15 price points to start calculating
-    if len(price_history) < 15:
-        print(f"Collecting market data... ({len(price_history)}/15 gathered)")
+    if len(price_history) < LONG_WINDOW:
+        print(f"[Gathering Data] {len(price_history)}/{LONG_WINDOW} price points collected...")
         return
 
-    # Calculate 5-period (fast) and 15-period (slow) moving averages
-    fast_sma = calculate_sma(price_history, period=5)
-    slow_sma = calculate_sma(price_history, period=15)
+    short_sma = calculate_sma(price_history, SHORT_WINDOW)
+    long_sma = calculate_sma(price_history, LONG_WINDOW)
 
-    print(f"Fast SMA (5): ${fast_sma:.2f} | Slow SMA (15): ${slow_sma:.2f}")
+    print(f"[Strategy Check] Price: ${current_price:.2f} | Short SMA: ${short_sma:.2f} | Long SMA: ${long_sma:.2f}")
 
-    # Trading Signal Rules
-    if fast_sma > slow_sma:
-        print(">>> SIGNAL: BUY (Bullish Trend Detected) <<<")
-    elif fast_sma < slow_sma:
-        print(">>> SIGNAL: SELL (Bearish Trend Detected) <<<")
+    # Golden Cross: Fast SMA crosses ABOVE Slow SMA -> BUY
+    if short_sma > long_sma and not in_position:
+        print(">>> SIGNAL: Golden Cross (BUY)")
+        execute_order("BUY", symbol, current_price)
+
+    # Death Cross: Fast SMA crosses BELOW Slow SMA -> SELL
+    elif short_sma < long_sma and in_position:
+        print(">>> SIGNAL: Death Cross (SELL)")
+        execute_order("SELL", symbol, current_price)
+
     else:
-        print("SIGNAL: HOLD (Neutral Market)")
+        status = "Holding Position" if in_position else "Waiting for Signal"
+        print(f"[Status] {status}")
 
+# ==========================================
+# 6. MAIN EXECUTION LOOP
+# ==========================================
 def main():
-    print("Starting Quantitative Strategy Bot...")
+    init_log_file()
+    print("Starting Quantitative Trading Bot with Trade Logging...")
+    print(f"Logging outputs to: {LOG_FILE}\n")
     
     while True:
         try:
-            price = get_ticker_price("BTCUSDT")
-            
+            price = get_latest_price("BTCUSDT")
             if price is not None:
-                print(f"\n[Price Update] BTC: ${price}")
-                evaluate_trading_strategy(price)
+                evaluate_strategy(price, "BTCUSDT")
             
-            time.sleep(5) # Fetch every 5 seconds
+            time.sleep(5)
             
         except KeyboardInterrupt:
-            print("\nBot execution stopped by user.")
+            print("\n[Bot Stopped] Terminated by user.")
             break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[Loop Error] {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
