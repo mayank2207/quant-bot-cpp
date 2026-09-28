@@ -1,0 +1,5 @@
+{
+  "api_key": "YOUR_ROOSTOO_API_KEY",
+  "secret_key": "YOUR_ROOSTOO_SECRET_KEY",
+  "base_url": "https://api.roostoo.com"
+}
