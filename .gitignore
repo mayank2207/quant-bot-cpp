@@ -1,0 +1,17 @@
+# Sensitive credentials
+.env
+config.json
+keys.json
+
+# C++ Build outputs & executables
+*.exe
+*.o
+*.obj
+build/
+bin/
+
+# Python / IDE files
+__pycache__/
+.vscode/
+.idea/
+config.json
